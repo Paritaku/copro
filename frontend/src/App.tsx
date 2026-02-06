@@ -1,9 +1,18 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './App.css'
-import { Button } from './components/ui/button'
+import Layout from './components/components/Layout'
+import GenererFichier from './pages/GenererFichier'
 
 function App() {
   return (
-    <Button>Test shadcn</Button>
+    <BrowserRouter basename="">
+      <Routes>
+        <Route path='/' element={<Layout />}>
+          <Route  index path='' element={<GenererFichier />} />
+          <Route path='parametres' element={<div>Settings Page</div>} /> 
+        </Route>
+      </Routes>
+    </BrowserRouter>  
   )
 }
 

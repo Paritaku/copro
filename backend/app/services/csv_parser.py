@@ -6,7 +6,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.styles.borders import Side, Border
 from openpyxl.utils import column_index_from_string, get_column_letter
-from io import BytesIO
+from fastapi import UploadFile, HTTPException
+from io import BytesIO, TextIOWrapper
 from decimal import ROUND_HALF_UP, Decimal
 
 
@@ -14,15 +15,28 @@ class CSVParser:
     """Parser pour fichiers CSV de titres fonciers"""
     unicode = "\u1D43"
     
-    def __init__(self, delimiter=";"):
-        self.delimiter = delimiter
+    """ Les fichiers excel """
+    excel_key = ["Quot P CH2", "TR-N", "TR-C", "TA", "Voix"]
     
-    def parse_file(self, file_path: str) -> ImportedData:
-        """Parse un fichier CSV de titre foncier"""
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            reader = csv.reader(f, delimiter=self.delimiter)
-            rows = [row for row in reader]
+    def __init__(self, delimiter: str = ';'):
+        self._delimiter = delimiter
+
+    @property
+    def delimiter(self):
+        return self._delimiter
+
+    @delimiter.setter
+    def delimiter(self, value: str):
+        self._delimiter = value
         
+    def parse_file(self, file: UploadFile) -> ImportedData:
+        """Parse un fichier CSV de titre foncier"""
+        files_bytes = BytesIO(file.file.read())
+        files_bytes.seek(0)
+        
+        wrapper = TextIOWrapper(files_bytes, encoding="utf-8")
+        reader = csv.reader(wrapper, delimiter=self.delimiter)
+        rows = [row for row in reader]
         return self._parse_rows(rows)
     
     def parse_content(self, content: str) -> ImportedData:
@@ -211,11 +225,9 @@ class CSVParser:
         borderSide = Side(style = style, border_style=None, color='FF000000')
         return Border(left=borderSide, top=borderSide, bottom=borderSide, right=borderSide)
         
-    def generer_xlxs_voix(self, data: ImportedData):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Voix"
-        
+    def generer_xlxs_voix(self, data: ImportedData, wb: Workbook):
+        ws = wb.create_sheet("Voix")
+
         ws.column_dimensions["C"].width = 30
         ws.column_dimensions["D"].width = 30
         ws.column_dimensions["E"].width = 30
@@ -405,10 +417,8 @@ class CSVParser:
         
         return buffer
     
-    def generer_xlxs_quotation(self, data: ImportedData):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Quot P CH2"
+    def generer_xlxs_quotation(self, data: ImportedData, wb: Workbook):
+        ws = wb.create_sheet("Quot P CH2")
       
         # ========================== FONT ==========================
         fontTimes16Bold = self._create_times_new_roman_font(16, True)
@@ -628,9 +638,7 @@ class CSVParser:
                 if(lot.indice_privative):
                     quot = Decimal(lot.surface_avec_surplomb) * Decimal(etage.total_surface_interieure) / Decimal(totaux_generaux_surface_avec_surplomb) 
                     indivision = Decimal(lot.surface_avec_surplomb)  * Decimal(10000) / Decimal(totaux_generaux_surface_avec_surplomb)
-                
-                    print(current_line, quot, indivision)
-                
+
                     totaux_quots_etage += quot
                     totaux_indivision_etage += indivision
                 
@@ -708,11 +716,9 @@ class CSVParser:
             for cell in row:
                 cell.border = self._solid_black_border(type)
                 
-    def generer_xlxs_ta(self, data: ImportedData):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "TA"
-        
+    def generer_xlxs_ta(self, data: ImportedData, wb: Workbook):
+        ws = wb.create_sheet("TA")
+
         for i in range (1,8):
             ws.column_dimensions[get_column_letter(i)].width = 25
             
@@ -839,10 +845,8 @@ class CSVParser:
         
         return buffer
         
-    def generer_excel_tr_n(self, data: ImportedData):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "TR-N"
+    def generer_excel_tr_n(self, data: ImportedData, wb: Workbook):
+        ws = wb.create_sheet(title="TR-N")
         
         for i in range (2,11):
             letter = get_column_letter(i)
@@ -965,13 +969,13 @@ class CSVParser:
         for etage in data.etages:
             start_merge = current_line + 1
             nb_ligne_merge = 0
-            print(f"==============={etage.nom}=====================s")
-            commerce_lots = [lot for lot in etage.lots if "commerc" in lot.consistance.lower() and lot.indice_privative]
-            appartements_lots = [lot for lot in etage.lots if "appartement" in lot.consistance.lower() and lot.indice_privative]
-
-            if(commerce_lots.__len__() > 0):
+            
+            lots_prives = [lot for lot in etage.lots if lot.indice_privative]
+            commerce_lots = [lot for lot in lots_prives if "commerc" in lot.consistance.lower()]
+            appartements_lots = [lot for lot in lots_prives if "appartement" in lot.consistance.lower()]
+                
+            if(len(commerce_lots) > 0):
                 current_line += 1
-                print(current_line)
                 nb_ligne_merge += 1
                 ws.row_dimensions[current_line].height = 30
                 ws.merge_cells(f"C{current_line}:E{current_line}")
@@ -981,11 +985,11 @@ class CSVParser:
                 cell.font = arial12
                 
                 cell = ws[f"J{current_line}"]
-                cell.value = f"{sum(lot.surface_avec_surplomb for lot in commerce_lots)} m²"
+                cell.value = f"{Decimal(sum(lot.surface_avec_surplomb for lot in commerce_lots)).quantize(Decimal("1"))} m²"
                 cell.alignment = self._fully_centered()
                 cell.font = arial12
                 
-            if(appartements_lots.__len__() > 0):
+            if(len(appartements_lots) > 0):
                 current_line += 1
                 nb_ligne_merge += 1
                 ws.row_dimensions[current_line].height = 30
@@ -994,23 +998,228 @@ class CSVParser:
                 cell.value = "Appartements(habitation)"
                 cell.alignment = self._fully_centered()
                 cell.font = arial12
-                print(current_line)
                 
                 cell = ws[f"J{current_line}"]
-                cell.value = f"{sum(lot.surface_avec_surplomb for lot in commerce_lots)} m²"
+                cell.value = f"{Decimal(sum(lot.surface_avec_surplomb for lot in appartements_lots)).quantize(Decimal("1"))} m²"
                 cell.alignment = self._fully_centered()
                 cell.font = arial12
                             
             if(nb_ligne_merge >= 2):
                 ws.merge_cells(f"B{start_merge}:B{start_merge+nb_ligne_merge-1}")
                 
-            cell = ws[f"B{start_merge}"]
-            cell.value = etage.nom
-            cell.alignment = self._fully_centered()
-            cell.font = arial12bold  
+            if(len(appartements_lots) > 0 or len(commerce_lots) > 0):    
+                cell = ws[f"B{start_merge}"]
+                cell.value = etage.nom
+                cell.alignment = self._fully_centered()
+                cell.font = arial12bold  
         
         buffer = BytesIO()
         wb.save(buffer)
         buffer.seek(0)
         
         return buffer
+    
+    def generate_excel_tr_c(self, data: ImportedData, wb: Workbook):
+        ws = wb.create_sheet(title="TR-C")
+        
+        for i in range (2,11):
+            letter = get_column_letter(i)
+            ws.column_dimensions[letter].width = 20
+            
+        # =============== FONT ===============
+        arial12bold = self._create_arial_font(12, True)
+        times12BoldUnderlined = self._create_times_new_roman_font(14, True, "single")
+        arial14 = self._create_arial_font(14, False)
+        arial12= self._create_arial_font(12, False)
+        
+        # Headers
+        ws.merge_cells("B2:D6")
+        cell = ws["B2"]
+        cell.font = arial12bold
+        self._apply_border_to_range(ws=ws, type="thin", range="B2:D6")
+        cell.alignment = self._fully_centered(wrap_text=True)
+        cell.value = "ROYAUME DU MAROC\nAgence Nationale de la conservation Foncière Du Cadastre et de la Cartographie\n Conservation Foncière Meknés"
+
+        ws.merge_cells("E2:F6")
+        cell = ws["E2"]
+        cell.font = arial12bold
+        self._apply_border_to_range(ws=ws, type="thin", range="E2:F6")
+        cell.alignment = self._fully_centered()
+        cell.value = "N° de la pièce : 2/2"
+        
+        for i in range(2,7):
+            ws.merge_cells(f"G{i}:J{i}")
+            ws.row_dimensions[i].height = 25
+            letter = get_column_letter(i)
+            ws[f"G{i}"].font = arial12bold
+            ws[f"G{i}"].alignment = Alignment(vertical="center")
+            self._apply_border_to_range(ws=ws, type="thin", range=f"G{i}:J{i}")
+            
+        cell = ws["G2"]
+        cell.value = f"Titre Foncier : {data.titre_foncier}"
+
+        cell = ws["G3"]
+        cell.value = "IGT : Ahmed El Hmidi"
+ 
+        cell = ws["G4"]
+        cell.value = "Carnet / Bon : "
+        
+        cell = ws["G5"]
+        cell.value = "Date de délivrance : "
+        
+        cell = ws["G6"]
+        cell.value = "Zoning : "
+        
+        for i in range (8, 10):
+            letter = get_column_letter(i)
+            ws.merge_cells(f"B{i}:I{i}")
+            cell = ws[f"B{i}"]
+            cell.font = times12BoldUnderlined
+            cell.alignment = self._fully_centered()
+            ws.row_dimensions[i].height = 30
+        
+        cell = ws["B8"]
+        cell.value = "Copropriété" 
+       
+        cell = ws["B9"]
+        cell.value = "Tableau récapitulatif des superficies totales par consistance"
+        
+        
+        ws.merge_cells("B10:D11")
+        self._apply_border_to_range(ws=ws, type="thin", range="B10:D11")
+        ws.merge_cells("E10:H10")
+        self._apply_border_to_range(ws=ws, type="thin", range="E10:H10")
+        ws.merge_cells("I10:I11")
+        self._apply_border_to_range(ws=ws, type="thin", range="I10:I11")
+        
+        cell = ws["B10"]
+        cell.value = "Consistance des parties privatives"
+        cell.alignment = self._fully_centered()
+        cell.font = arial14
+
+        cell = ws["E10"]
+        cell.value = "Superficies (m²)"
+        cell.alignment = self._fully_centered()
+        cell.font = arial14
+        
+        cell = ws["I10"]
+        cell.value = "Total"
+        cell.alignment = self._fully_centered()
+        cell.font = arial14
+        
+        cell = ws["E11"]
+        cell.value = "Superficie des P,P(1)"
+        cell.alignment = self._fully_centered(wrap_text=True)
+        cell.font = arial14
+        cell.border = self._solid_black_border(style="thin")
+        
+        cell = ws["F11"]
+        cell.value = "Cours"
+        cell.alignment = self._fully_centered(wrap_text=True)
+        cell.font = arial14
+        cell.border = self._solid_black_border(style="thin")
+        
+        cell = ws["G11"]
+        cell.value = "Balcon"
+        cell.alignment = self._fully_centered(wrap_text=True)
+        cell.border = self._solid_black_border(style="thin")
+        cell.font = arial14
+        
+        cell = ws["H11"]
+        cell.value = "Terrasse"
+        cell.alignment = self._fully_centered(wrap_text=True)
+        cell.font = arial14
+        cell.border = self._solid_black_border(style="thin")
+        
+        current_line = 11
+        lots_prives = [lot for etage in data.etages for lot in etage.lots if lot.indice_privative]
+        commerce_lots = [lot for lot in lots_prives if "commerc" in lot.consistance.lower()]
+        appartements_lots = [lot for lot in lots_prives if "appartement" in lot.consistance.lower()]
+                
+        if(len(commerce_lots) > 0):
+                current_line += 1
+                ws.row_dimensions[current_line].height = 30
+                ws.merge_cells(f"B{current_line}:D{current_line}")
+                cell = ws[f"B{current_line}"]
+                cell.value = "(Commerces)"
+                cell.alignment = self._fully_centered()
+                cell.font = arial12
+                
+                cell = ws[f"I{current_line}"]
+                cell.value = f"{Decimal(sum(lot.surface_avec_surplomb for lot in commerce_lots)).quantize(Decimal("1"))} m²"
+                cell.alignment = self._fully_centered()
+                cell.font = arial12
+                
+        if(len(appartements_lots) > 0):
+                current_line += 1
+                ws.row_dimensions[current_line].height = 30
+                ws.merge_cells(f"B{current_line}:D{current_line}")
+                cell = ws[f"B{current_line}"]
+                cell.value = "Appartements(habitation)"
+                cell.alignment = self._fully_centered()
+                cell.font = arial12
+                
+                cell = ws[f"I{current_line}"]
+                cell.value = f"{Decimal(sum(lot.surface_avec_surplomb for lot in appartements_lots)).quantize(Decimal("1"))} m²"
+                cell.alignment = self._fully_centered()
+                cell.font = arial12
+                        
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        
+        return buffer
+    
+    def generer_fichiers_copropriete(self, listFichier: list[str], file: UploadFile):
+        data = self.parse_file(file)
+        xlxs_a_generer = list(set(listFichier) & set(self.excel_key))
+        
+        if xlxs_a_generer:
+            wb = Workbook()
+            for f in xlxs_a_generer:
+                match f:
+                    case "Quot P CH2":
+                       self.generer_xlxs_quotation(data, wb)
+                    case "TR-N":
+                        self.generer_excel_tr_n(data, wb)
+                    case "TR-C":
+                        self.generate_excel_tr_c(data, wb)
+                    case "TA":
+                        self.generer_xlxs_ta(data, wb)
+                    case "Voix":
+                        self.generer_xlxs_voix(data, wb)
+                    case _:
+                        # cas par défaut si jamais f n’est pas dans excel_key
+                        print(f"Clé inconnue: {f}")
+
+        # Supprimer la feuille par défaut vide créée automatiquement
+        if "Sheet" in wb.sheetnames:
+            wb.remove(wb["Sheet"])
+            
+            buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        
+        return buffer
+      
+    def validate_csv(file: UploadFile) -> str:
+        if not file.filename.lower().endswith(".csv"):
+            raise HTTPException(400, "Extension invalide")
+
+        if file.content_type not in ("text/csv", "application/vnd.ms-excel"):
+            raise HTTPException(400, "Type MIME invalide")
+
+        try:
+            file_bytes = BytesIO(file.file.read())
+            file_bytes.seek(0)
+            
+            wrapper = TextIOWrapper(file_bytes, encoding="utf-8")
+            sample = wrapper.read(2048)
+            try:
+                dialect = csv.Sniffer().sniff(sample)
+                file.file.seek(0)
+                return dialect.delimiter
+            except csv.Error:
+                return ";"
+        except Exception:
+            raise HTTPException(400, "Contenu CSV invalide")

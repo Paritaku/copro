@@ -1,11 +1,18 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from pathlib import Path
+import traceback
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 import tempfile
 import os
 from app.services.csv_parser import CSVParser
 from app.models.models import ImportedData
 from fastapi.responses import StreamingResponse
+from typing import List
+import logging
 
+logger = logging.getLogger("uvicorn.error") 
 router = APIRouter(prefix="/api", tags=["data"])
+BASE_DIR = Path(__file__).resolve().parent.parent
+TEMPLATE_PATH = BASE_DIR / "resources" / "templates" / "tb_modele_modification_du_titre_foncier.xlsx"
 
 # Stockage en mémoire
 current_data: ImportedData = None
@@ -144,3 +151,43 @@ def get_data():
         raise HTTPException(status_code=400, detail="Aucune donnée. Uploadez d'abord un fichier CSV.")
     
     return current_data
+
+@router.get("/modele")
+def get_modele():
+    """  Retourne le template à utiliser comme modèle pour la génération des fichiers """
+    file = open(TEMPLATE_PATH, mode="rb")
+    headers = {
+            "Content-Disposition": 'attachment; filename="TB_template.xlsx"'
+    }
+    return StreamingResponse(
+        file,
+        headers=headers,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    
+@router.post("/fichiers-copropriete")
+def get_fichiers_copropriete(
+    fichiersAGenerer: List[str] = Form(...), 
+    file: UploadFile = File(...)
+): 
+    if not fichiersAGenerer or not file:
+        raise HTTPException(status_code=400, detail="Vous devez spécifier au moins un fichier à générer et passer un fichier comme entrée")
+    
+    try:
+        parser = CSVParser()
+        delimiter = CSVParser.validate_csv(file)
+        parser.delimiter = delimiter
+        file_stream = parser.generer_fichiers_copropriete(fichiersAGenerer, file)
+
+        headers = {
+                "Content-Disposition": 'attachment; filename="fichier.xlsx"'
+        }
+        return StreamingResponse (
+            file_stream,
+            headers=headers,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        # return "No error"
+    except Exception as e:
+        logger.error("Une erreur est survenue:\n%s", traceback.format_exc())
+        raise HTTPException(status_code = 500, detail=str(e))
